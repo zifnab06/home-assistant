@@ -7,10 +7,10 @@ https://home-assistant.io/components/mqtt/#use-the-embedded-broker
 import asyncio
 import logging
 import tempfile
-import threading
 
 from homeassistant.components.mqtt import PROTOCOL_311
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.util.async import run_coroutine_threadsafe
 
 REQUIREMENTS = ['hbmqtt==0.7.1']
 DEPENDENCIES = ['http']
@@ -25,20 +25,9 @@ def broker_coro(loop, config):
     return broker
 
 
-def loop_run(loop, broker, shutdown_complete):
-    """Run broker and clean up when done."""
-    loop.run_forever()
-    # run_forever ends when stop is called because we're shutting down
-    loop.run_until_complete(broker.shutdown())
-    loop.close()
-    shutdown_complete.set()
-
-
 def start(hass, server_config):
     """Initialize MQTT Server."""
     from hbmqtt.broker import BrokerException
-
-    loop = asyncio.new_event_loop()
 
     try:
         passwd = tempfile.NamedTemporaryFile()
@@ -48,29 +37,22 @@ def start(hass, server_config):
         else:
             client_config = None
 
-        start_server = asyncio.gather(broker_coro(loop, server_config),
-                                      loop=loop)
-        loop.run_until_complete(start_server)
-        # Result raises exception if one was raised during startup
-        broker = start_server.result()[0]
+        future = run_coroutine_threadsafe(
+            broker_coro(hass.loop, server_config), hass.loop)
+
+        broker = future.result()
     except BrokerException:
         logging.getLogger(__name__).exception('Error initializing MQTT server')
-        loop.close()
         return False, None
     finally:
         passwd.close()
 
-    shutdown_complete = threading.Event()
+    @asyncio.coroutine
+    def shutdown_mqtt_server(event):
+        """Shut down the MQTT server."""
+        yield from broker.shutdown()
 
-    def shutdown(event):
-        """Gracefully shutdown MQTT broker."""
-        loop.call_soon_threadsafe(loop.stop)
-        shutdown_complete.wait()
-
-    hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, shutdown)
-
-    threading.Thread(target=loop_run, args=(loop, broker, shutdown_complete),
-                     name="MQTT-server").start()
+    hass.bus.listen_once(EVENT_HOMEASSISTANT_STOP, shutdown_mqtt_server)
 
     return True, client_config
 

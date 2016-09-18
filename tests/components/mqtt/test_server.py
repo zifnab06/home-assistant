@@ -13,18 +13,19 @@ class TestMQTT:
     def setup_method(self, method):
         """Setup things to be run when tests are started."""
         self.hass = get_test_home_assistant()
+        self.hass.config.components.append('http')
 
     def teardown_method(self, method):
         """Stop everything that was started."""
         self.hass.stop()
 
+    @patch('passlib.apps.custom_app_context', return_value='')
+    @patch('tempfile.NamedTemporaryFile', return_value=MagicMock())
     @patch('homeassistant.components.mqtt.MQTT')
-    @patch('asyncio.gather')
-    @patch('asyncio.new_event_loop')
-    def test_creating_config_with_http_pass(self, mock_new_loop, mock_gather,
-                                            mock_mqtt):
+    @patch('homeassistant.components.mqtt.server.run_coroutine_threadsafe')
+    def test_creating_config_with_http_pass(self, mock_run, mock_mqtt,
+                                            mock_temp, mock_context):
         """Test if the MQTT server gets started and subscribe/publish msg."""
-        self.hass.config.components.append('http')
         password = 'super_secret'
 
         self.hass.config.api = MagicMock(api_password=password)
@@ -35,21 +36,19 @@ class TestMQTT:
 
         mock_mqtt.reset_mock()
 
-        self.hass.config.components = ['http']
+        self.hass.config.components.remove('mqtt')
         self.hass.config.api = MagicMock(api_password=None)
         assert _setup_component(self.hass, mqtt.DOMAIN, {})
         assert mock_mqtt.called
         assert mock_mqtt.mock_calls[0][1][5] is None
         assert mock_mqtt.mock_calls[0][1][6] is None
 
-    @patch('asyncio.gather')
-    @patch('asyncio.new_event_loop')
-    def test_broker_config_fails(self, mock_new_loop, mock_gather):
+    @patch('homeassistant.components.mqtt.server.run_coroutine_threadsafe')
+    def test_broker_config_fails(self, mock_run):
         """Test if the MQTT component fails if server fails."""
-        self.hass.config.components.append('http')
         from hbmqtt.broker import BrokerException
 
-        mock_gather.side_effect = BrokerException
+        mock_run.side_effect = BrokerException
 
         self.hass.config.api = MagicMock(api_password=None)
         assert not _setup_component(self.hass, mqtt.DOMAIN, {

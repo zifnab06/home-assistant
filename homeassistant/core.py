@@ -404,13 +404,12 @@ class EventBus(object):
         To listen to all events specify the constant ``MATCH_ALL``
         as event_type.
         """
-        future = run_callback_threadsafe(
-            self._loop, self.async_listen, event_type, listener)
-        future.result()
+        async_remove = run_callback_threadsafe(
+            self._loop, self.async_listen, event_type, listener).result()
 
         def remove_listener():
             """Remove the listener."""
-            self._remove_listener(event_type, listener)
+            run_callback_threadsafe(self._loop, async_remove).result()
 
         return remove_listener
 
@@ -441,23 +440,12 @@ class EventBus(object):
 
         Returns function to unsubscribe the listener.
         """
-        @ft.wraps(listener)
-        def onetime_listener(event):
-            """Remove listener from eventbus and then fire listener."""
-            if hasattr(onetime_listener, 'run'):
-                return
-            # Set variable so that we will never run twice.
-            # Because the event bus might have to wait till a thread comes
-            # available to execute this listener it might occur that the
-            # listener gets lined up twice to be executed.
-            # This will make sure the second time it does nothing.
-            setattr(onetime_listener, 'run', True)
+        async_remove = run_callback_threadsafe(
+            self._loop, self.async_listen_once, event_type, listener).result()
 
-            remove_listener()
-
-            listener(event)
-
-        remove_listener = self.listen(event_type, onetime_listener)
+        def remove_listener():
+            """Remove the listener."""
+            run_callback_threadsafe(self._loop, async_remove).result()
 
         return remove_listener
 
@@ -492,23 +480,16 @@ class EventBus(object):
                 job_priority = JobPriority.from_event_type(event.event_type)
                 self._pool.add_job(job_priority, (listener, event))
 
-        self.async_listen(event_type, onetime_listener)
-
-        return onetime_listener
+        return self.async_listen(event_type, onetime_listener)
 
     def remove_listener(self, event_type, listener):
         """Remove a listener of a specific event_type. (DEPRECATED 0.28)."""
         _LOGGER.warning('bus.remove_listener has been deprecated. Please use '
                         'the function returned from calling listen.')
-        self._remove_listener(event_type, listener)
-
-    def _remove_listener(self, event_type, listener):
-        """Remove a listener of a specific event_type."""
-        future = run_callback_threadsafe(
+        run_callback_threadsafe(
             self._loop,
             self.async_remove_listener, event_type, listener
-        )
-        future.result()
+        ).result()
 
     def async_remove_listener(self, event_type, listener):
         """Remove a listener of a specific event_type.

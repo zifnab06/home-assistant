@@ -123,19 +123,16 @@ class TestEventBus(unittest.TestCase):
 
         def listener(_): pass
 
-        self.bus.listen('test', listener)
+        unsub = self.bus.listen('test', listener)
 
         self.assertEqual(old_count + 1, len(self.bus.listeners))
 
         # Try deleting a non registered listener, nothing should happen
-        self.bus._remove_listener('test', lambda x: len)
+        self.bus.remove_listener('test', lambda x: len)
 
         # Remove listener
-        self.bus._remove_listener('test', listener)
+        unsub()
         self.assertEqual(old_count, len(self.bus.listeners))
-
-        # Try deleting listener while category doesn't exist either
-        self.bus._remove_listener('test', listener)
 
     def test_unsubscribe_listener(self):
         """Test unsubscribe listener from returned function."""

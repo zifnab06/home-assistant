@@ -122,10 +122,9 @@ class HomeAssistant(object):
     def __init__(self, loop=None):
         """Initialize new Home Assistant object."""
         self.loop = loop or asyncio.get_event_loop()
-        self.executer = ThreadPoolExecutor(max_workers=5)
-        self.loop.set_default_executor(self.executer)
-        self.pool = pool = create_worker_pool()
-        self.bus = EventBus(pool, self.loop)
+        self.executor = ThreadPoolExecutor(max_workers=5)
+        self.loop.set_default_executor(self.executor)
+        self.bus = EventBus(self.async_add_job, self.loop)
         self.services = ServiceRegistry(self.bus, self.add_job, self.loop)
         self.states = StateMachine(self.bus, self.loop)
         self.config = Config()  # type: Config
@@ -139,8 +138,7 @@ class HomeAssistant(object):
 
     def start(self) -> None:
         """Start home assistant."""
-        _LOGGER.info(
-            "Starting Home Assistant (%d threads)", self.pool.worker_count)
+        _LOGGER.info("Starting Home Assistant")
         self.state = CoreState.starting
 
         # Register the async start
@@ -202,7 +200,8 @@ class HomeAssistant(object):
         async_create_timer(self)
         async_monitor_worker_pool(self)
         self.bus.async_fire(EVENT_HOMEASSISTANT_START)
-        yield from self.loop.run_in_executor(None, self.pool.block_till_done)
+        # yield from self.loop.run_in_executor(None, self.pool.block_till_done)
+        yield from self.loop.run_in_executor(None, time.sleep, 0)
         self.state = CoreState.running
 
     def add_job(self,
@@ -214,9 +213,11 @@ class HomeAssistant(object):
         target: target to call.
         args: parameters for method to call.
         """
-        self.pool.add_job(priority, (target,) + args)
+        self.loop.run_in_executor(None, target, *args)
+        # self.pool.add_job(priority, (target,) + args)
 
-    def async_add_job(self, target: Callable[..., None], *args: Any):
+    def async_add_job(self, target: Callable[..., None], *args: Any,
+                      priority: JobPriority=JobPriority.EVENT_DEFAULT):
         """Add a job from within the eventloop.
 
         target: target to call.
@@ -225,7 +226,7 @@ class HomeAssistant(object):
         if asyncio.iscoroutinefunction(target):
             self.loop.create_task(target(*args))
         else:
-            self.add_job(target, *args)
+            self.add_job(target, *args, priority=priority)
 
     def _loop_empty(self):
         """Python 3.4.2 empty loop compatibility function."""
@@ -249,8 +250,7 @@ class HomeAssistant(object):
         def notify_when_done():
             """Notify event loop when pool done."""
             while True:
-                # Wait for the work queue to empty
-                self.pool.block_till_done()
+                self.executor._work_queue.join()
 
                 # Verify the loop is empty
                 if self._loop_empty():
@@ -259,10 +259,10 @@ class HomeAssistant(object):
                 # sleep in the loop executor, this forces execution back into
                 # the event loop to avoid the block thread from starving the
                 # async loop
-                run_coroutine_threadsafe(
-                    sleep_wait(),
-                    self.loop
-                ).result()
+                # run_coroutine_threadsafe(
+                #     sleep_wait(),
+                #     self.loop
+                # ).result()
 
             complete.set()
 
@@ -281,9 +281,10 @@ class HomeAssistant(object):
         """
         self.state = CoreState.stopping
         self.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
-        yield from self.loop.run_in_executor(None, self.pool.block_till_done)
-        yield from self.loop.run_in_executor(None, self.pool.stop)
-        self.executer.shutdown()
+        # yield from self.loop.run_in_executor(None, self.pool.block_till_done)
+        # yield from self.loop.run_in_executor(None, self.pool.stop)
+        # Should wait here till event loop is done?
+        self.executor.shutdown()
         self.state = CoreState.not_running
         self.loop.stop()
 
@@ -345,11 +346,11 @@ class Event(object):
 class EventBus(object):
     """Allows firing of and listening for events."""
 
-    def __init__(self, pool: util.ThreadPool,
+    def __init__(self, async_add_job,
                  loop: asyncio.AbstractEventLoop) -> None:
         """Initialize a new event bus."""
         self._listeners = {}
-        self._pool = pool
+        self._async_add_job = async_add_job
         self._loop = loop
 
     def async_listeners(self):
@@ -369,9 +370,6 @@ class EventBus(object):
 
     def fire(self, event_type: str, event_data=None, origin=EventOrigin.local):
         """Fire an event."""
-        if not self._pool.running:
-            raise HomeAssistantError('Home Assistant has shut down.')
-
         self._loop.call_soon_threadsafe(self.async_fire, event_type,
                                         event_data, origin)
         return
@@ -400,14 +398,7 @@ class EventBus(object):
 
         sync_jobs = []
         for func in listeners:
-            if asyncio.iscoroutinefunction(func):
-                self._loop.create_task(func(event))
-            else:
-                sync_jobs.append((job_priority, (func, event)))
-
-        # Send all the sync jobs at once
-        if sync_jobs:
-            self._pool.add_many_jobs(sync_jobs)
+            self._async_add_job(func, event, priority=job_priority)
 
     def listen(self, event_type, listener):
         """Listen for all events or events of a specific type.
@@ -501,7 +492,8 @@ class EventBus(object):
                 yield from listener(event)
             else:
                 job_priority = JobPriority.from_event_type(event.event_type)
-                self._pool.add_job(job_priority, (listener, event))
+                self._async_add_job(listener, event,
+                                          priority=job_priority)
 
         self.async_listen(event_type, onetime_listener)
 
@@ -1170,6 +1162,8 @@ def create_worker_pool(worker_count=None):
 
 def async_monitor_worker_pool(hass):
     """Create a monitor for the thread pool to check if pool is misbehaving."""
+    # TODO FIX
+    return
     busy_threshold = hass.pool.worker_count * 3
 
     handle = None

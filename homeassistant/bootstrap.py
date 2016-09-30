@@ -116,12 +116,6 @@ def _setup_component(hass: core.HomeAssistant, domain: str, config) -> bool:
 
         hass.config.components.append(component.DOMAIN)
 
-        # Assumption: if a component does not depend on groups
-        # it communicates with devices
-        if 'group' not in getattr(component, 'DEPENDENCIES', []) and \
-           hass.pool.worker_count <= 10:
-            hass.pool.add_worker()
-
         hass.bus.fire(
             EVENT_COMPONENT_LOADED, {ATTR_COMPONENT: component.DOMAIN}
         )

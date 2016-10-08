@@ -7,10 +7,12 @@ by the user or automatically based upon automation events, etc.
 For more details about this component, please refer to the documentation at
 https://home-assistant.io/components/script/
 """
+import asyncio
 import logging
 
 import voluptuous as vol
 
+from homeassistant.core import callback
 from homeassistant.const import (
     ATTR_ENTITY_ID, SERVICE_TURN_OFF, SERVICE_TURN_ON,
     SERVICE_TOGGLE, STATE_ON, CONF_ALIAS)
@@ -18,8 +20,8 @@ from homeassistant.core import split_entity_id
 from homeassistant.helpers.entity import ToggleEntity
 from homeassistant.helpers.entity_component import EntityComponent
 import homeassistant.helpers.config_validation as cv
-
 from homeassistant.helpers.script import Script
+from homeassistant.util.async import run_callback_threadsafe
 
 DOMAIN = "script"
 ENTITY_ID_FORMAT = DOMAIN + '.{}'
@@ -57,9 +59,15 @@ def is_on(hass, entity_id):
 
 def turn_on(hass, entity_id, variables=None):
     """Turn script on."""
+    run_callback_threadsafe(
+        hass.loop, async_turn_on, hass, entity_id, variables).result()
+
+
+def async_turn_on(hass, entity_id, variables=None):
+    """Turn script on."""
     _, object_id = split_entity_id(entity_id)
 
-    hass.services.call(DOMAIN, object_id, variables)
+    hass.services.async_call(DOMAIN, object_id, variables)
 
 
 def turn_off(hass, entity_id):
@@ -77,6 +85,7 @@ def setup(hass, config):
     component = EntityComponent(_LOGGER, DOMAIN, hass,
                                 group_name=GROUP_NAME_ALL_SCRIPTS)
 
+    @asyncio.coroutine
     def service_handler(service):
         """Execute a service call to script.<script name>."""
         entity_id = ENTITY_ID_FORMAT.format(service.service)
@@ -84,7 +93,7 @@ def setup(hass, config):
         if script.is_on:
             _LOGGER.warning("Script %s already running.", entity_id)
             return
-        script.turn_on(variables=service.data)
+        yield from script.async_turn_on(variables=service.data)
 
     for object_id, cfg in config[DOMAIN].items():
         alias = cfg.get(CONF_ALIAS, object_id)
@@ -93,22 +102,25 @@ def setup(hass, config):
         hass.services.register(DOMAIN, object_id, service_handler,
                                schema=SCRIPT_SERVICE_SCHEMA)
 
+    @callback
     def turn_on_service(service):
         """Call a service to turn script on."""
         # We could turn on script directly here, but we only want to offer
         # one way to do it. Otherwise no easy way to detect invocations.
         for script in component.extract_from_service(service):
-            turn_on(hass, script.entity_id, service.data.get(ATTR_VARIABLES))
+            async_turn_on(hass, script.entity_id, service.data.get(ATTR_VARIABLES))
 
+    @callback
     def turn_off_service(service):
         """Cancel a script."""
         for script in component.extract_from_service(service):
-            script.turn_off()
+            script.async_turn_off()
 
+    @asyncio.coroutine
     def toggle_service(service):
         """Toggle a script."""
-        for script in component.extract_from_service(service):
-            script.toggle()
+        yield from asyncio.gather(script.async_toggle() for script
+                                  in component.extract_from_service(service))
 
     hass.services.register(DOMAIN, SERVICE_TURN_ON, turn_on_service,
                            schema=SCRIPT_TURN_ONOFF_SCHEMA)
@@ -153,10 +165,20 @@ class ScriptEntity(ToggleEntity):
         """Return true if script is on."""
         return self.script.is_running
 
-    def turn_on(self, **kwargs):
+    @asyncio.coroutine
+    def async_turn_on(self, **kwargs):
         """Turn the entity on."""
-        self.script.run(kwargs.get(ATTR_VARIABLES))
+        yield from self.script.async_run(kwargs.get(ATTR_VARIABLES))
 
-    def turn_off(self, **kwargs):
+    @callback
+    def async_turn_off(self, **kwargs):
         """Turn script off."""
-        self.script.stop()
+        self.script.async_stop()
+
+    @asyncio.coroutine
+    def async_toggle(self):
+        """Toggle script."""
+        if self.is_on:
+            self.async_turn_off()
+        else:
+            yield from self.async_turn_on()

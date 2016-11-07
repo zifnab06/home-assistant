@@ -32,6 +32,10 @@ CONF_RGB_STATE_TOPIC = 'rgb_state_topic'
 CONF_RGB_COMMAND_TOPIC = 'rgb_command_topic'
 CONF_RGB_VALUE_TEMPLATE = 'rgb_value_template'
 CONF_BRIGHTNESS_SCALE = 'brightness_scale'
+CONF_SEPERATE_HSL_COMMANDS = 'seperate_hsl_commands'
+CONF_HUE_COMMAND_TOPIC = 'hue_command_topic'
+CONF_SATURATION_COMMAND_TOPIC = 'saturation_command_topic'
+CONF_LIGHTNESS_COMMAND_TOPIC = 'lightness_command_topic'
 CONF_COLOR_TEMP_STATE_TOPIC = 'color_temp_state_topic'
 CONF_COLOR_TEMP_COMMAND_TOPIC = 'color_temp_command_topic'
 CONF_COLOR_TEMP_VALUE_TEMPLATE = 'color_temp_value_template'
@@ -54,6 +58,9 @@ PLATFORM_SCHEMA = mqtt.MQTT_RW_PLATFORM_SCHEMA.extend({
     vol.Optional(CONF_RGB_STATE_TOPIC): mqtt.valid_subscribe_topic,
     vol.Optional(CONF_RGB_COMMAND_TOPIC): mqtt.valid_publish_topic,
     vol.Optional(CONF_RGB_VALUE_TEMPLATE): cv.template,
+    vol.Optional(CONF_HUE_COMMAND_TOPIC): mqtt.valid_publish_topic,
+    vol.Optional(CONF_SATURATION_COMMAND_TOPIC): mqtt.valid_publish_topic,
+    vol.Optional(CONF_LIGHTNESS_COMMAND_TOPIC): mqtt.valid_publish_topic,
     vol.Optional(CONF_PAYLOAD_ON, default=DEFAULT_PAYLOAD_ON): cv.string,
     vol.Optional(CONF_PAYLOAD_OFF, default=DEFAULT_PAYLOAD_OFF): cv.string,
     vol.Optional(CONF_OPTIMISTIC, default=DEFAULT_OPTIMISTIC): cv.boolean,
@@ -78,7 +85,11 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
                 CONF_RGB_STATE_TOPIC,
                 CONF_RGB_COMMAND_TOPIC,
                 CONF_COLOR_TEMP_STATE_TOPIC,
-                CONF_COLOR_TEMP_COMMAND_TOPIC
+                CONF_COLOR_TEMP_COMMAND_TOPIC,
+                CONF_SEPERATE_HSL_COMMANDS,
+                CONF_HUE_COMMAND_TOPIC,
+                CONF_SATURATION_COMMAND_TOPIC,
+                CONF_LIGHTNESS_COMMAND_TOPIC
             )
         },
         {
@@ -97,6 +108,10 @@ def setup_platform(hass, config, add_devices, discovery_info=None):
         config.get(CONF_BRIGHTNESS_SCALE),
     )])
 
+def convert_rgb_to_hsv(rgb):
+    """Convert Home Assistant RGB values to HSV values."""
+    hue, saturation, brightness = colorsys.rgb_to_hsv(*rgb)
+    return [int(hue*100), int(saturation*100), int(brightness*100)]
 
 class MqttLight(Light):
     """MQTT light."""
@@ -121,7 +136,9 @@ class MqttLight(Light):
         self._state = False
         self._supported_features = 0
         self._supported_features |= (
-            topic[CONF_RGB_STATE_TOPIC] is not None and SUPPORT_RGB_COLOR)
+            (topic[CONF_RGB_STATE_TOPIC] is not None or
+             topic[CONF_SEPERATE_HSL_COMMANDS] is not None) and
+             SUPPORT_RGB_COLOR)
         self._supported_features |= (
             topic[CONF_BRIGHTNESS_STATE_TOPIC] is not None and
             SUPPORT_BRIGHTNESS)
@@ -177,7 +194,8 @@ class MqttLight(Light):
             mqtt.subscribe(self._hass, self._topic[CONF_RGB_STATE_TOPIC],
                            rgb_received, self._qos)
             self._rgb = [255, 255, 255]
-        if self._topic[CONF_RGB_COMMAND_TOPIC] is not None:
+        if self._topic[CONF_RGB_COMMAND_TOPIC] is not None or
+           self._topic[CONF_SEPERATE_HSL_COMMANDS] is not None:
             self._rgb = [255, 255, 255]
         else:
             self._rgb = None
@@ -247,6 +265,22 @@ class MqttLight(Light):
             mqtt.publish(self._hass, self._topic[CONF_RGB_COMMAND_TOPIC],
                          '{},{},{}'.format(*kwargs[ATTR_RGB_COLOR]),
                          self._qos, self._retain)
+
+            if self._optimistic_rgb:
+                self._rgb = kwargs[ATTR_RGB_COLOR]
+                should_update = True
+        elif ATTR_RGB_COLOR in kwargs and \
+           self._topic[CONF_SEPERATE_HSL_COMMANDS] is not None:
+            hsl = convert_rgb_to_hsv(kwargs[ATTR_RGB_COLOR])
+            if self._topic[CONF_HUE_COMMAND_TOPIC] is not None:
+                mqtt.publish(self._hass, self._topic[CONF_HUE_COMMAND_TOPIC],
+                             hsl[0], self._qos, self._retain)
+            if self._topic[CONF_SATURATION_COMMAND_TOPIC] is not None:
+                mqtt.publish(self._hass, self._topic[CONF_SATURATION_COMMAND_TOPIC],
+                             hsl[1], self._qos, self._retain)
+            if self._topic[CONF_LIGHTNESS_COMMAND_TOPIC] is not None:
+                mqtt.publish(self._hass, self._topic[CONF_LIGHTNESS_COMMAND_TOPIC],
+                             hsl[2], self._qos, self._retain)
 
             if self._optimistic_rgb:
                 self._rgb = kwargs[ATTR_RGB_COLOR]
